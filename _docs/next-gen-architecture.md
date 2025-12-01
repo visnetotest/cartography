@@ -1,101 +1,89 @@
-# Next-Generation Architecture for 10x Performance in Cartography
+# Cartography-Next-Gen: A Scalable, Open-Source Architecture
 
-## 1. Executive Summary
+*   **Authors**: Marco Lancini, AWS
+*   **Version**: 0.4
+*   **Status**: Draft
 
-This document outlines a new architectural vision for Cartography's data processing pipeline, designed to deliver a 10x improvement in both throughput and latency. The current architecture, while modular, is fundamentally limited by its single-process, sequential execution model based in Python.
+## 1. Abstract
 
-To achieve the next level of performance, we propose a shift to a **distributed, event-driven architecture built on microservices.** This new design replaces the current monolithic orchestration with a resilient, scalable, and highly parallelized system.
+This document proposes a new, next-generation architecture for the Cartography project. The goal is to create a scalable, resilient, and extensible system using a fully open-source technology stack. This approach avoids vendor lock-in and provides the flexibility to deploy on any cloud provider or on-premises. The architecture moves from a monolithic structure to a distributed system of containerized microservices orchestrated by Apache Airflow.
 
-**The Core Transformation:**
+## 2. The Problem: Monolithic Architecture and Scalability Limits
 
-*   **From Python Scripts to Compiled Microservices:** We will rewrite performance-critical components in a high-concurrency language like **Go**.
-*   **From Sequential to Parallel:** We will introduce a **message queue (Kafka)** to decouple services and enable massive parallelism.
-*   **From Single-Server to Cloud-Native:** We will leverage **Kubernetes** for automated scaling, deployment, and operational management.
+The current architecture of Cartography is monolithic, which leads to performance bottlenecks, a lack of resilience, and difficulty in extending the system. As environments grow, these limitations become more pronounced.
 
-This new architecture will enable Cartography to handle vastly larger cloud environments, provide near real-time visibility, and serve as a foundation for the proactive security features outlined in our strategic vision.
+## 3. The Solution: A Distributed, Open-Source Architecture
 
-## 2. Current State Analysis & Limitations
+We propose re-architecting Cartography into a set of distributed microservices that communicate via a message queue. This design decouples the main components, allowing them to be scaled, deployed, and maintained independently using open-source technologies.
 
-Cartography's current architecture is a Python application that orchestrates "intel" modules to ingest data sequentially from various sources directly into a Neo4j database.
+### 3.1. Core Components
 
-**Tech Stack:**
+1.  **Orchestration (Apache Airflow)**: A powerful, open-source workflow management platform that will schedule and manage the execution of sync jobs.
 
-*   **Language:** Python 3.10
-*   **Database:** Neo4j
-*   **Orchestration:** Monolithic Python application, likely run as a single process.
-*   **Deployment:** Docker container
+2.  **Message Queue (NATS Stream)**: A lightweight, high-performance, open-source messaging system that enables asynchronous communication between services.
 
-**Key Performance Bottlenecks:**
+3.  **Intel Microservices (Docker Containers)**: A fleet of small, independent services, each responsible for a single intel task. They are packaged as Docker containers and consume jobs from the message queue, perform API calls, and publish the raw results back to the queue.
 
-1.  **Python's GIL:** The Global Interpreter Lock (GIL) in Python prevents true multi-threading for CPU-bound tasks, limiting the processing of large datasets to a single core.
-2.  **Sequential Execution:** The data ingestion process is largely sequential. Even if modules use I/O-bound concurrency, the overall process is constrained by the slowest data source.
-3.  **Direct Database Contention:** Multiple modules attempting to write to Neo4j concurrently can lead to lock contention and reduced write throughput. The database becomes the central bottleneck.
-4.  **Limited Scalability:** The current model scales vertically (requiring a larger server) rather than horizontally (distributing the load across multiple machines), which is expensive and has a low ceiling.
+4.  **Graph Ingestion Service (Docker Container)**: This service, also a Docker container, consumes processed data from the queue, performs the final transformation, generates optimized Cypher queries, and batches the writes to the Neo4j database.
 
-## 3. The 10x Performance Vision: A New Architecture
+### 3.2. Advantages of the New Architecture
 
-To break through the current limitations, we will redesign Cartography around a message-driven microservices pattern.
+*   **No Vendor Lock-In**: The entire stack is open-source, providing the freedom to run the application on any cloud or on-premises infrastructure.
+*   **Cost-Effective**: Leverages open-source software, eliminating licensing fees. Can be run on commodity hardware or the most cost-effective VM instances.
+*   **Scalability**: The containerized microservices can be scaled horizontally by running more instances on additional VMs as needed.
+*   **Flexibility & Control**: Provides full control over the entire application stack and deployment environment.
 
-### 3.1. Architectural Principles
-
-*   **Asynchronous & Event-Driven:** Services communicate through events via a central message bus, eliminating direct dependencies and enabling asynchronous processing.
-*   **Massive Parallelism:** The work of ingesting data from hundreds or thousands of sources is distributed across a fleet of stateless microservices that can be scaled independently.
-*   **Horizontal Scalability:** The system is designed to scale out by adding more service replicas, handled automatically by Kubernetes.
-*   **Resilience & Fault Tolerance:** If a service fails, it does not cascade and bring down the entire system. Kubernetes will automatically restart the failed service, and work can be re-processed from the message queue.
-
-### 3.2. Proposed Architecture Diagram
+### 3.3. Proposed Architecture Diagram
 
 ```mermaid
 graph TD
-    subgraph Orchestration
-        A[CLI / API Server]
+    subgraph "Orchestration"
+        A["Apache Airflow"]
     end
 
-    subgraph Data Flow
-        B[Kafka Message Queue]
+    subgraph "Data Flow"
+        B["NATS Stream"]
     end
 
-    subgraph Processing Fleet (Kubernetes)
-        C[Intel Microservices (Go/Python)]
-        D[Graph Ingestion Service (Go)]
+    subgraph "Processing Fleet (Docker on VMs)"
+        C["Intel Microservices (Containers)"]
+        D["Graph Ingestion Service (Container)"]
     end
 
-    subgraph Database
-        E[Neo4j Cluster]
+    subgraph "Database"
+        E["Neo4j Cluster"]
     end
 
-    A -- "Sync Job: {account_id, scope}" --> B
-    B -- "topic: intel_jobs" --> C
-    C -- "API Calls to AWS, GCP, etc." --> F[Cloud/SaaS APIs]
+    A -- "Triggers Sync Jobs" --> C
+    C -- "API Calls to AWS, GCP, etc." --> F["Cloud/SaaS APIs"]
     C -- "Graph Data: {nodes, rels}" --> B
     B -- "topic: graph_data" --> D
     D -- "Optimized Batch Writes" --> E
 ```
 
-### 3.3. Key Components & Technology Stack
+## 4. Project Breakdown: Phases and Tasks
 
-| Component | Technology | Responsibility | Justification |
-| :--- | :--- | :--- | :--- |
-| **Orchestrator** | Go + gRPC/REST | Initiates sync jobs and provides an API for external systems. | Go provides high performance for the API layer. |
-| **Message Queue** | **Apache Kafka** | The central nervous system of the architecture. Persists job requests and intermediate graph data. | Kafka is built for high-throughput, persistent, and scalable event streaming, making it ideal for this use case. |
-| **Intel Microservices**| **Go / Python** | Stateless workers that subscribe to `intel_jobs`, fetch data from cloud APIs, and publish results to the `graph_data` topic. | **Go** is ideal for new, performance-critical modules. Existing **Python** modules can be wrapped in a microservice to leverage their I/O concurrency and ease migration. |
-| **Graph Ingestion Service** | **Go** | A dedicated service that consumes from the `graph_data` topic, batches the data into optimized Cypher queries, and writes to Neo4j. | This service is the "shock absorber" for the database. By using Go and batching, we can maximize write throughput and handle data spikes without overwhelming Neo4j. |
-| **Database** | **Neo4j Cluster** | The graph database of record. | Moving to a clustered Neo4j setup provides high availability and read scalability. Write performance is protected by the Ingestion Service. |
-| **Container Orchestration**| **Kubernetes** | Manages the deployment, scaling, and health of all microservices. | Kubernetes provides the horizontal scalability and operational automation required for this architecture. |
+This project will be executed in three phases:
 
-## 4. How This Architecture Achieves the 10x Leap
+### Phase 1: Foundation and Core Services
 
-1.  **Massive Parallelism:** Instead of one process, we can run hundreds of `Intel Microservice` replicas in parallel. A job to scan 1,000 AWS accounts can be split into 1,000 messages and processed concurrently, dramatically reducing total sync time.
-2.  **Elimination of the GIL:** By moving the data-intensive `Graph Ingestion Service` to Go, we are no longer constrained by Python's GIL. This service can use all available CPU cores to process data for insertion.
-3.  **Optimized Database Writes:** The `Graph Ingestion Service` acts as a buffer. It can accumulate thousands of node/relationship updates from the queue and commit them to Neo4j in a single, highly optimized transaction, which is orders of magnitude faster than many small commits.
-4.  **Elastic Scalability:** If there is a sudden influx of work (e.g., a manual sync of the entire organization), Kubernetes can automatically scale up the number of microservice replicas to handle the load and then scale them back down, ensuring both performance and cost-efficiency.
+*   **Task 1.1: Set up Infrastructure**: Provision virtual machines for the core components.
+*   **Task 1.2: Deploy NATS Stream**: Install and configure NATS Stream for inter-service communication.
+*   **Task 1.3: Deploy Apache Airflow**: Install and configure Airflow to orchestrate the data collection workflows.
+*   **Task 1.4: Develop Graph Ingestion Service**: Containerize the service that consumes processed data from the message queue and writes it to Neo4j.
 
-## 5. Phased Migration Strategy
+### Phase 2: Intel Microservice Development
 
-A "big bang" rewrite is risky. We recommend a phased, iterative migration:
+*   **Task 2.1: Develop AWS EC2 Intel Microservice**: Create the first intel microservice as a Docker container.
+*   **Task 2.2: Develop GCP Storage Intel Microservice**: Create a second intel microservice for GCP to prove multi-cloud capability.
+*   **Task 2.3: Establish Microservice Template**: Create a standardized template for building new intel microservices, including Dockerfiles, CI/CD pipelines, and documentation.
 
-1.  **Phase 1: Introduce the Ingestion Service:** First, build the `Graph Ingestion Service` and the `graph_data` Kafka topic. Modify the existing Python application to send its data to Kafka instead of writing directly to Neo4j. This immediately decouples the database and provides a significant performance win with minimal code change.
-2.  **Phase 2: Offload the First Module:** Select one high-impact intel module (e.g., AWS EC2). Create a Go-based microservice for it. The main Python app can now publish a job to an `intel_jobs` topic for this module to consume, rather than running it itself.
-3.  **Phase 3: Iterate and Expand:** Continue migrating intel modules one by one into their own microservices. Over time, the original Python monolith is slowly strangled until it only serves as a legacy entrypoint, which can eventually be replaced by the new Go-based API server.
+### Phase 3: Testing, Deployment, and Migration
 
-This strategy ensures that we deliver value incrementally, de-risk the project, and gradually build towards our 10x performance vision.
+*   **Task 3.1: End-to-End Testing**: Conduct comprehensive testing of the new architecture.
+*   **Task 3.2: Documentation and Training**: Create detailed documentation for developers and operators.
+*   **Task 3.3: Migration Plan**: Develop a phased migration strategy from the monolithic architecture to the new system.
+
+## 5. Requirements
+
+All source codes and related docs must be stored under "_docs". This PoC will be independent from the original source of cartography.
